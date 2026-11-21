@@ -1,4 +1,9 @@
-"""Antarmuka Streamlit: monitoring, peringatan, histori, dan kontrol PID."""
+"""Antarmuka Streamlit: monitoring, peringatan, histori, dan kontrol PID.
+
+Tampilan mengikuti gambar referensi: header, bar status, dua kartu besar
+(suhu & kelembapan), kotak peringatan + legenda, dan kartu histori data.
+Status PID dan panel pengaturan dipindah ke bagian lipat (expander) di bawah.
+"""
 from __future__ import annotations
 
 import hmac
@@ -37,29 +42,59 @@ CSS = """
 <style>
 .stApp { background: #0b1220; }
 header[data-testid="stHeader"] { background: transparent; }
-.block-container { max-width: 1100px; padding-top: 2rem; }
+.block-container { max-width: 960px; padding-top: 2rem; }
+
+/* ---- header & bar status ---- */
 .title { text-align:center; font-weight:800; font-size:clamp(1.15rem,2.6vw,1.9rem);
          letter-spacing:.5px; color:#f1f5f9; line-height:1.35; margin:.2rem 0 1.1rem; }
 .sysbar { display:flex; justify-content:space-between; flex-wrap:wrap; gap:.4rem 1.2rem;
           font-size:.85rem; color:#cbd5e1; margin-bottom:.8rem; }
-.dot { display:inline-block; width:.62rem; height:.62rem; border-radius:50%; margin-right:.3rem; }
+.dot { display:inline-block; width:.62rem; height:.62rem; border-radius:50%; margin-right:.35rem; }
+
+/* ---- kartu ---- */
 .card { background:#172236; border:1px solid #2a3750; border-radius:12px; padding:1rem 1.2rem; }
-.metric { display:flex; justify-content:space-between; align-items:center; min-height:170px; margin-bottom:.6rem; }
+.metric { display:flex; justify-content:space-between; align-items:center; min-height:160px; margin-bottom:.6rem; }
 .metric-title { color:#e2e8f0; font-weight:600; font-size:.95rem; }
-.metric-value { font-size:clamp(2.2rem,5vw,3.2rem); font-weight:800; color:#fff; line-height:1.1; margin:.35rem 0; }
+.metric-value { font-size:clamp(2.4rem,5.5vw,3.5rem); font-weight:800; color:#fff; line-height:1.1;
+                margin:.35rem 0 .5rem; text-shadow:0 0 18px rgba(255,255,255,.22); }
 .unit { font-size:.55em; font-weight:700; }
 .badge { display:inline-block; padding:.12rem .7rem; border-radius:6px; font-weight:700;
          font-size:.78rem; color:#0b1220; }
-.note { color:#cbd5e1; font-size:.85rem; margin-top:.5rem; }
-.bigicon { font-size:3.8rem; padding-left:.8rem; }
+.note { color:#cbd5e1; font-size:.85rem; margin-top:.55rem; }
+.bigicon { padding-left:.8rem; line-height:0; }
+
+/* ---- peringatan ---- */
 .sec-title { color:#e2e8f0; font-weight:700; font-size:.95rem; margin-bottom:.6rem; }
 .alert-box { border-radius:8px; padding:.7rem 1rem; font-size:.9rem; color:#f8fafc; }
-.legend { display:flex; flex-wrap:wrap; gap:.5rem 1.6rem; margin-top:.8rem; font-size:.8rem; color:#cbd5e1; }
-.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:.6rem; margin-top:.4rem; }
+.legend { display:flex; flex-wrap:wrap; gap:.5rem 1.8rem; margin-top:.85rem; font-size:.82rem; color:#cbd5e1; }
+.legend-note { color:#94a3b8; font-size:.74rem; margin-top:.55rem; line-height:1.5; }
+
+/* ---- status PID ---- */
+.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:.6rem; margin:.4rem 0 .8rem; }
 .mini { background:#101a2c; border:1px solid #26334b; border-radius:10px; padding:.55rem .8rem; }
 .mini-l { color:#94a3b8; font-size:.72rem; text-transform:uppercase; letter-spacing:.04em; }
 .mini-v { color:#f1f5f9; font-size:1.05rem; font-weight:700; }
 .foot { color:#64748b; font-size:.75rem; text-align:center; margin-top:1.5rem; }
+
+/* ---- kartu histori (container bertanda .hist-marker) ---- */
+.hist-marker { display:none; }
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.hist-marker) {
+  background:#172236; border:1px solid #2a3750 !important; border-radius:12px; padding:.5rem .8rem .6rem; }
+[data-testid="stExpander"] { background:#172236; border:1px solid #2a3750; border-radius:12px; }
+
+/* ---- tombol terang seperti di gambar ---- */
+div[data-testid="stButton"] button,
+div[data-testid="stDownloadButton"] button,
+div[data-testid="stFormSubmitButton"] button {
+  background:#e5e7eb; color:#0f172a; border:1px solid #cbd5e1; border-radius:6px;
+  font-weight:600; min-height:0; padding:.3rem .9rem; }
+div[data-testid="stButton"] button:hover,
+div[data-testid="stDownloadButton"] button:hover,
+div[data-testid="stFormSubmitButton"] button:hover {
+  background:#ffffff; color:#0f172a; border-color:#ffffff; }
+div[data-testid="stButton"] button p,
+div[data-testid="stDownloadButton"] button p,
+div[data-testid="stFormSubmitButton"] button p { color:#0f172a; font-size:.82rem; font-weight:600; }
 </style>
 """
 
@@ -107,30 +142,59 @@ def get_db():
     return SupabaseClient(s.supabase_url, s.supabase_key, s.timezone)
 
 
+# ------------------------------------------------------------ ikon SVG
+def _icon_thermo(color: str, value) -> str:
+    """Termometer; tinggi cairan mengikuti nilai (skala 0–40 °C)."""
+    frac = 0.0 if value is None else min(max(value / 40.0, 0.0), 1.0)
+    level_y = 56 - frac * 34
+    ticks = "".join(
+        f'<line x1="48" y1="{y}" x2="{x2}" y2="{y}" stroke="{color}" stroke-width="2.5" stroke-linecap="round"/>'
+        for y, x2 in ((22, 56), (30, 53), (38, 56), (46, 53)))
+    return (
+        f'<svg width="64" height="92" viewBox="0 0 64 92" fill="none" xmlns="http://www.w3.org/2000/svg" '
+        f'style="filter:drop-shadow(0 0 8px {_rgba(color, .6)})">'
+        f'<path d="M22 16a10 10 0 0 1 20 0V57a18 18 0 1 1-20 0Z" stroke="{color}" stroke-width="3" '
+        f'fill="{_rgba(color, .1)}"/>'
+        f'<line x1="32" y1="62" x2="32" y2="{level_y:.1f}" stroke="{color}" stroke-width="6" stroke-linecap="round"/>'
+        f'<circle cx="32" cy="72" r="10" fill="{color}"/>{ticks}</svg>')
+
+
+def _icon_drop(color: str) -> str:
+    return (
+        f'<svg width="64" height="84" viewBox="0 0 64 84" fill="none" xmlns="http://www.w3.org/2000/svg" '
+        f'style="filter:drop-shadow(0 0 8px {_rgba(color, .6)})">'
+        f'<path d="M32 4C32 4 8 34 8 54a24 24 0 0 0 48 0C56 34 32 4 32 4Z" fill="{color}"/>'
+        f'<path d="M20 56a12 12 0 0 0 9 11" stroke="#fff" stroke-opacity=".45" stroke-width="4" '
+        f'stroke-linecap="round"/></svg>')
+
+
 # ------------------------------------------------------------ komponen UI
-def _metric_card(icon: str, title: str, value, unit: str, stt: alerts.Status, big: str) -> str:
+def _metric_card(icon: str, title: str, value, unit: str, stt: alerts.Status, art: str) -> str:
     c = stt.color
     return _html(f"""
-    <div class="card metric" style="border-color:{_rgba(c, .7)};box-shadow:0 0 18px {_rgba(c, .18)};">
+    <div class="card metric" style="border-color:{_rgba(c, .75)};box-shadow:0 0 22px {_rgba(c, .2)},inset 0 0 30px {_rgba(c, .05)};">
       <div>
         <div class="metric-title">{icon} {title}</div>
         <div class="metric-value">{_fmt(value)}<span class="unit"> {unit if value is not None else ''}</span></div>
         <span class="badge" style="background:{c}">● {stt.level}</span>
         <div class="note">{stt.note}</div>
       </div>
-      <div class="bigicon" style="filter:drop-shadow(0 0 10px {_rgba(c, .6)})">{big}</div>
+      <div class="bigicon">{art}</div>
     </div>""")
 
 
 def _legend(l: Limits) -> str:
     items = [
-        (GREEN, "NORMAL", f"Suhu {l.temp_ideal_min:g}–{l.temp_ideal_max:g} °C · RH {l.hum_ideal_min:g}–{l.hum_ideal_max:g} %"),
-        (YELLOW, "WARNING", "Di luar rentang ideal, belum mencapai batas kritis"),
-        (RED, "MASALAH / KRITIS", f"Suhu &lt; {l.temp_crit_min:g} atau &gt; {l.temp_crit_max:g} °C · "
-                                  f"RH &lt; {l.hum_crit_min:g} atau &gt; {l.hum_crit_max:g} %"),
+        (GREEN, f"{l.temp_ideal_min:g} – {l.temp_ideal_max:g} °C", "NORMAL"),
+        (YELLOW, f"&gt; {l.temp_ideal_max:g} – {l.temp_crit_max:g} °C", "WARNING"),
+        (RED, f"&gt; {l.temp_crit_max:g} °C", "MASALAH / KRITIS"),
     ]
-    return '<div class="legend">' + "".join(
-        f'<div>{_dot(c)}<b>{name}</b> : {txt}</div>' for c, name, txt in items) + "</div>"
+    row = '<div class="legend">' + "".join(
+        f'<div>{_dot(c)}{rng} : <b>{name}</b></div>' for c, rng, name in items) + "</div>"
+    note = (f'<div class="legend-note">Di luar rentang ideal dianggap WARNING (termasuk suhu &lt; {l.temp_ideal_min:g} °C); '
+            f'suhu kritis bila &lt; {l.temp_crit_min:g} °C. Kelembapan: ideal {l.hum_ideal_min:g}–{l.hum_ideal_max:g} %RH, '
+            f'kritis bila &lt; {l.hum_crit_min:g} atau &gt; {l.hum_crit_max:g} %RH.</div>')
+    return row + note
 
 
 def _mini(label: str, value: str) -> str:
@@ -153,18 +217,19 @@ def live_panel() -> None:
 
     # --- baris status
     now = datetime.now(ZoneInfo(s.timezone))
-    broker_chip = f"{_dot(GREEN if snap['broker_connected'] else RED)}Broker: " + \
-                  ("Terhubung" if snap["broker_connected"] else "Terputus")
-    esp_chip = f"{_dot(GREEN if online else RED)}ESP32: " + ("Online" if online else "Offline")
+    esp_c, esp_t = (GREEN, "Online") if online else (RED, "Offline")
     if not online:
-        dht_chip = f"{_dot(GREY)}Sensor DHT22: Tidak diketahui"
+        dht_c, dht_t = GREY, "Tidak diketahui"
+    elif sensor_ok:
+        dht_c, dht_t = GREEN, "Terkoneksi (Online)"
     else:
-        dht_chip = f"{_dot(GREEN if sensor_ok else RED)}Sensor DHT22: " + \
-                   ("Terkoneksi (Online)" if sensor_ok else "Error")
+        dht_c, dht_t = RED, "Error"
+    broker_chip = "" if snap["broker_connected"] else \
+        f'<span style="margin-right:1.1rem">{_dot(RED)}Broker: Terputus</span>'
     st.markdown(_html(f"""
       <div class="sysbar">
-        <div>Waktu Sistem: <b>{now.day} {MONTHS[now.month - 1]} {now.year}</b> | {now:%H:%M:%S} {now.tzname()}</div>
-        <div>{broker_chip} &nbsp;&nbsp; {esp_chip} &nbsp;&nbsp; {dht_chip}</div>
+        <div>Waktu Sistem: <b>{now.day} {MONTHS[now.month - 1]} {now.year}</b> | {now:%H:%M} {now.tzname()}</div>
+        <div>{broker_chip}<span style="margin-right:1.1rem">{_dot(esp_c)}ESP32: <span style="color:{esp_c}">{esp_t}</span></span>Status Sensor DHT: {_dot(dht_c)}<span style="color:{dht_c}">{dht_t}</span></div>
       </div>"""), unsafe_allow_html=True)
     if snap["last_error"]:
         st.warning(snap["last_error"])
@@ -173,47 +238,22 @@ def live_panel() -> None:
     t_st = alerts.temperature_status(temp, limits, online, sensor_ok)
     h_st = alerts.humidity_status(hum, limits, online, sensor_ok)
     c1, c2 = st.columns(2)
-    c1.markdown(_metric_card("🌡️", "TEMPERATUR RUANG", temp, "°C", t_st, "🌡️"), unsafe_allow_html=True)
-    c2.markdown(_metric_card("💧", "KELEMBAPAN RUANG", hum, "%RH", h_st, "💧"), unsafe_allow_html=True)
+    c1.markdown(_metric_card("🌡️", "TEMPERATUR RUANG", temp, "°C", t_st, _icon_thermo(t_st.color, temp)),
+                unsafe_allow_html=True)
+    c2.markdown(_metric_card("💧", "KELEMBAPAN RUANG", hum, "%RH", h_st, _icon_drop(h_st.color)),
+                unsafe_allow_html=True)
 
     # --- sistem peringatan
     pid_active = bool(tel and tel.get("mode") == "AUTO" and tel.get("power"))
     level, message = alerts.overall(t_st, h_st, temp, hum, limits, pid_active)
     ac = alerts.COLORS[level]
     st.markdown(_html(f"""
-      <div class="card" style="margin-bottom:.6rem">
+      <div class="card" style="margin-bottom:.8rem">
         <div class="sec-title">🚨 SISTEM PERINGATAN (ALERT)</div>
-        <div class="alert-box" style="background:{_rgba(ac, .14)};border:1px solid {_rgba(ac, .65)}">
-          <b>{level}:</b> {message}
+        <div class="alert-box" style="background:{_rgba(ac, .16)};border:1px solid {_rgba(ac, .7)}">
+          {_dot(ac)}<b>{level}:</b> {message}
         </div>
         {_legend(limits)}
-      </div>"""), unsafe_allow_html=True)
-
-    # --- status kendali PID (read-only; nilai yang benar-benar dipakai ESP32)
-    if tel:
-        duty = _num(tel.get("duty"))
-        reason = REASONS.get(str(tel.get("reason", "OK")), str(tel.get("reason", "")))
-        act = f"{tel.get('act', '--')} · {_fmt(duty, '{:.0f}')} %" + (f"<br><small>{reason}</small>" if reason else "")
-        synced = cfg_dict is not None and int(tel.get("rev", -1)) == int(cfg_dict.get("rev", -2))
-        sync_txt = "✔ Sinkron" if synced else "⏳ Menunggu ESP32"
-        boxes = [
-            ("Setpoint suhu", _fmt(_num(tel.get("sp")), "{:.1f} °C")),
-            ("Suhu aktual", _fmt(temp, "{:.1f} °C")),
-            ("Error (aktual − setpoint)", _fmt(_num(tel.get("err")), "{:+.1f} °C")),
-            ("Kp / Ki / Kd", f"{_fmt(_num(tel.get('kp')), '{:g}')} / {_fmt(_num(tel.get('ki')), '{:g}')} / {_fmt(_num(tel.get('kd')), '{:g}')}"),
-            ("Mode kendali", str(tel.get("mode", "--"))),
-            ("Sistem", "ON" if tel.get("power") else "OFF"),
-            ("Aktuator (Peltier)", act),
-            ("Konfigurasi di ESP32", sync_txt),
-        ]
-    else:
-        boxes = [(l, "--") for l in ("Setpoint suhu", "Suhu aktual", "Error (aktual − setpoint)",
-                                      "Kp / Ki / Kd", "Mode kendali", "Sistem",
-                                      "Aktuator (Peltier)", "Konfigurasi di ESP32")]
-    st.markdown(_html(f"""
-      <div class="card" style="margin-bottom:.6rem">
-        <div class="sec-title">🎛️ STATUS KENDALI PID</div>
-        <div class="grid">{''.join(_mini(l, v) for l, v in boxes)}</div>
       </div>"""), unsafe_allow_html=True)
 
 
@@ -239,25 +279,28 @@ def _with_gaps(df: pd.DataFrame, gap_minutes: float) -> pd.DataFrame:
     return pd.concat([d, filler]).sort_values("created_at").reset_index(drop=True)
 
 
-def _chart(df: pd.DataFrame, gap_minutes: float) -> go.Figure:
+def _chart(df: pd.DataFrame, gap_minutes: float, hours) -> go.Figure:
     d = _with_gaps(df, gap_minutes)
     many = len(d) > 1500
     mode = "lines" if many else "lines+markers"
+    tickfmt = "%H:%M" if (hours is not None and hours <= 24) else "%d/%m %H:%M"
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=d["created_at"], y=d["temperature"], name="Temperatur (°C)", mode=mode,
                              line=dict(color="#ef4444", width=2), marker=dict(size=4),
-                             fill="tozeroy", fillcolor="rgba(239,68,68,0.22)", connectgaps=False))
+                             fill="tozeroy", fillcolor="rgba(239,68,68,0.28)", connectgaps=False))
     fig.add_trace(go.Scatter(x=d["created_at"], y=d["humidity"], name="Kelembapan (%)", mode=mode,
                              line=dict(color="#3b82f6", width=2), marker=dict(size=4),
-                             fill="tozeroy", fillcolor="rgba(59,130,246,0.15)", connectgaps=False))
-    fig.add_trace(go.Scatter(x=d["created_at"], y=d["setpoint"], name="Setpoint (°C)", mode="lines",
-                             line=dict(color="#f5b301", width=1.5, dash="dash"), connectgaps=False))
+                             fill="tozeroy", fillcolor="rgba(59,130,246,0.12)", connectgaps=False))
+    # Setpoint hanya digambar bila memang ada datanya (firmware mode PID).
+    if d["setpoint"].notna().any():
+        fig.add_trace(go.Scatter(x=d["created_at"], y=d["setpoint"], name="Setpoint (°C)", mode="lines",
+                                 line=dict(color="#f5b301", width=1.5, dash="dash"), connectgaps=False))
     fig.update_layout(
-        template="plotly_dark", height=360, margin=dict(l=10, r=10, t=30, b=10),
+        template="plotly_dark", height=320, margin=dict(l=10, r=10, t=30, b=10),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", hovermode="x unified",
         legend=dict(orientation="h", y=1.12, x=0.5, xanchor="center"),
-        xaxis=dict(title="Waktu", gridcolor="rgba(148,163,184,.12)"),
-        yaxis=dict(title="°C / %RH", gridcolor="rgba(148,163,184,.12)", rangemode="tozero"),
+        xaxis=dict(gridcolor="rgba(148,163,184,.12)", tickformat=tickfmt),
+        yaxis=dict(gridcolor="rgba(148,163,184,.12)", rangemode="tozero"),
     )
     return fig
 
@@ -266,47 +309,88 @@ def _chart(df: pd.DataFrame, gap_minutes: float) -> go.Figure:
 def history_panel() -> None:
     s = get_settings()
     st.session_state.setdefault("hist_nonce", 0)
-    title_ph = st.empty()
+    st.session_state.setdefault("show_table", False)
 
-    c1, c2, c3 = st.columns([3.2, 1.4, 1.1])
-    label = c1.radio("Rentang waktu", list(RANGES), index=3, horizontal=True,
-                     key="hist_range", label_visibility="collapsed")
-    auto = c2.toggle("Auto-refresh grafik", value=True, key="hist_auto")
-    if c3.button("↻ Muat ulang", key="hist_reload"):
-        st.session_state.hist_nonce += 1
-    hours = RANGES[label]
-    title_ph.markdown(
-        f'<div class="sec-title">📈 HISTORI DATA ({"REKAPAN " + label.upper() + " TERAKHIR" if hours else "SELURUH HISTORI"})</div>',
+    with st.container(border=True):
+        st.markdown('<span class="hist-marker"></span>', unsafe_allow_html=True)
+        title_ph = st.empty()
+
+        c1, c2, c3 = st.columns([3.4, 1.5, 1.1])
+        label = c1.radio("Rentang waktu", list(RANGES), index=3, horizontal=True,
+                         key="hist_range", label_visibility="collapsed")
+        auto = c2.toggle("Auto-refresh grafik", value=True, key="hist_auto")
+        if c3.button("↻ Muat ulang", key="hist_reload"):
+            st.session_state.hist_nonce += 1
+        hours = RANGES[label]
+        title_ph.markdown(
+            f'<div class="sec-title">📈 HISTORI DATA ({"REKAPAN " + label.upper() + " TERAKHIR" if hours else "SELURUH HISTORI"})</div>',
+            unsafe_allow_html=True)
+
+        if get_db() is None:
+            st.warning("Database belum dikonfigurasi (SUPABASE_URL / SUPABASE_SERVICE_KEY).")
+            return
+        nonce = int(time.time() // 30) if auto else st.session_state.hist_nonce
+        try:
+            df = load_history(hours, nonce)
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Gagal membaca histori dari Supabase: {exc}")
+            return
+        if df.empty:
+            st.info("Belum ada data tersimpan pada rentang ini. Pastikan ESP32 online dan tabel "
+                    "`sensor_log` di Supabase sudah dibuat (lihat sql/schema.sql).")
+            return
+
+        st.plotly_chart(_chart(df, s.gap_minutes, hours), config={"displayModeBar": False})
+
+        out = df.copy()
+        out["created_at"] = out["created_at"].dt.strftime("%Y-%m-%d %H:%M:%S%z")
+        _, b1, b2 = st.columns([2.6, 1.5, 1.7])
+        b1.download_button("Data Ekspor (CSV)", out.to_csv(index=False).encode("utf-8"),
+                           file_name=f"histori_arsip_{datetime.now():%Y%m%d_%H%M}.csv",
+                           mime="text/csv", key="dl_csv")
+        table_label = "Sembunyikan Tabel Log" if st.session_state.show_table else "Tampilkan Tabel Log"
+        if b2.button(table_label, key="btn_table"):
+            st.session_state.show_table = not st.session_state.show_table
+            st.rerun(scope="fragment")
+        st.caption(f"{len(df):,} pembacaan · terakhir: {df['created_at'].iloc[-1]:%d-%m-%Y %H:%M:%S}")
+        if st.session_state.show_table:
+            view = df.sort_values("created_at", ascending=False).head(1000).copy()
+            view["created_at"] = view["created_at"].dt.strftime("%Y-%m-%d %H:%M:%S")
+            st.dataframe(view.rename(columns=TABLE_COLS), hide_index=True)
+
+
+# ---------------------------------------------------------- status PID
+@st.fragment(run_every=2)
+def pid_panel() -> None:
+    snap = get_bridge().snapshot()
+    cfg_dict = snap["config"]
+    tel = snap["telemetry"]
+    labels = ("Setpoint suhu", "Suhu aktual", "Error (aktual − setpoint)", "Kp / Ki / Kd",
+              "Mode kendali", "Sistem", "Aktuator (Peltier)", "Konfigurasi di ESP32")
+    if tel:
+        duty = _num(tel.get("duty"))
+        reason = REASONS.get(str(tel.get("reason", "OK")), str(tel.get("reason", "")))
+        act = f"{tel.get('act', '--')} · {_fmt(duty, '{:.0f}')} %" + (f"<br><small>{reason}</small>" if reason else "")
+        try:
+            synced = cfg_dict is not None and int(tel.get("rev", -1)) == int(cfg_dict.get("rev", -2))
+        except (TypeError, ValueError):
+            synced = False
+        values = [
+            _fmt(_num(tel.get("sp")), "{:.1f} °C"),
+            _fmt(_num(tel.get("temp")), "{:.1f} °C"),
+            _fmt(_num(tel.get("err")), "{:+.1f} °C"),
+            f"{_fmt(_num(tel.get('kp')), '{:g}')} / {_fmt(_num(tel.get('ki')), '{:g}')} / {_fmt(_num(tel.get('kd')), '{:g}')}",
+            str(tel.get("mode", "--")),
+            "ON" if tel.get("power") else "OFF",
+            act,
+            "✔ Sinkron" if synced else "⏳ Menunggu ESP32",
+        ]
+    else:
+        values = ["--"] * len(labels)
+    st.markdown(_html(f"""
+      <div class="sec-title">🎛️ STATUS KENDALI PID</div>
+      <div class="grid">{''.join(_mini(l, v) for l, v in zip(labels, values))}</div>"""),
         unsafe_allow_html=True)
-
-    if get_db() is None:
-        st.warning("Database belum dikonfigurasi (SUPABASE_URL / SUPABASE_SERVICE_KEY).")
-        return
-    nonce = int(time.time() // 30) if auto else st.session_state.hist_nonce
-    try:
-        df = load_history(hours, nonce)
-    except Exception as exc:  # noqa: BLE001
-        st.error(f"Gagal membaca histori dari Supabase: {exc}")
-        return
-    if df.empty:
-        st.info("Belum ada data tersimpan pada rentang ini. Pastikan ESP32 online dan tabel "
-                "`sensor_log` di Supabase sudah dibuat (lihat sql/schema.sql).")
-        return
-
-    st.plotly_chart(_chart(df, s.gap_minutes), config={"displayModeBar": False})
-
-    out = df.copy()
-    out["created_at"] = out["created_at"].dt.strftime("%Y-%m-%d %H:%M:%S%z")
-    b1, b2, _ = st.columns([1.3, 1.3, 3])
-    b1.download_button("⬇ Data Ekspor (CSV)", out.to_csv(index=False).encode("utf-8"),
-                       file_name=f"histori_arsip_{datetime.now():%Y%m%d_%H%M}.csv",
-                       mime="text/csv", key="dl_csv")
-    show = b2.toggle("Tampilkan Tabel Log", key="show_table")
-    st.caption(f"{len(df):,} pembacaan · terakhir: {df['created_at'].iloc[-1]:%d-%m-%Y %H:%M:%S}")
-    if show:
-        view = df.sort_values("created_at", ascending=False).head(1000).copy()
-        view["created_at"] = view["created_at"].dt.strftime("%Y-%m-%d %H:%M:%S")
-        st.dataframe(view.rename(columns=TABLE_COLS), hide_index=True)
 
 
 # --------------------------------------------------------------- kontrol
@@ -335,7 +419,7 @@ def _send(bridge: MqttBridge, cfg: ControlConfig) -> None:
 def control_panel() -> None:
     s = get_settings()
     bridge = get_bridge()
-    st.markdown('<div class="sec-title" style="margin-top:1rem">⚙️ PENGATURAN & KONTROL SISTEM</div>',
+    st.markdown('<div class="sec-title" style="margin-top:.4rem">⚙️ PENGATURAN & KONTROL SISTEM</div>',
                 unsafe_allow_html=True)
 
     if s.dashboard_password and not st.session_state.get("auth_ok"):
@@ -418,6 +502,8 @@ def render() -> None:
         st.stop()
     live_panel()
     history_panel()
-    control_panel()
+    with st.expander("🎛️ Status kendali PID & pengaturan sistem", expanded=False):
+        pid_panel()
+        control_panel()
     st.markdown('<div class="foot">Dashboard monitoring & pengaturan — algoritma PID berjalan di ESP32.</div>',
                 unsafe_allow_html=True)
